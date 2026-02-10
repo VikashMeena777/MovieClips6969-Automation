@@ -42,7 +42,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg unzip
-          pip install yt-dlp
+          pip install yt-dlp --upgrade
+          yt-dlp -U
           
       - name: Install Deno (for yt-dlp JS runtime)
         run: |
@@ -65,9 +66,12 @@ jobs:
           echo "=== Rclone config debug ==="
           cat ~/.config/rclone/rclone.conf | head -3
 
-      - name: Setup YouTube cookies
+      - name: Setup cookies
         run: |
           echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
+          if [ -n "${{ secrets.FACEBOOK_COOKIES }}" ]; then
+            echo "${{ secrets.FACEBOOK_COOKIES }}" > fb_cookies.txt
+          fi
 
       - name: Create directories
         run: |
@@ -75,12 +79,26 @@ jobs:
 
       - name: Download video
         run: |
-          yt-dlp --cookies cookies.txt \
+          VIDEO_URL="${{ steps.vars.outputs.VIDEO_URL }}"
+          
+          # Choose cookies file based on URL
+          COOKIE_FILE="cookies.txt"
+          if echo "$VIDEO_URL" | grep -qi "facebook\|fb.com\|fb.watch"; then
+            if [ -f fb_cookies.txt ]; then
+              COOKIE_FILE="fb_cookies.txt"
+            fi
+          fi
+          
+          echo "Downloading from: $VIDEO_URL"
+          echo "Using cookies: $COOKIE_FILE"
+          
+          yt-dlp --cookies "$COOKIE_FILE" \
             --remote-components ejs:github \
             -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
             --merge-output-format mp4 \
+            --no-check-certificates \
             -o "Input/video.mp4" \
-            "${{ steps.vars.outputs.VIDEO_URL }}"
+            "$VIDEO_URL"
 
       - name: Process video clips
         env:
