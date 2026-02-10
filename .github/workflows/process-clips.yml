@@ -1,0 +1,114 @@
+name: Process Movie Clips
+
+on:
+  repository_dispatch:
+    types: [process-video]
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Video URL (YouTube/Facebook)'
+        required: true
+        type: string
+      channel_name:
+        description: 'Channel name for overlay text'
+        required: false
+        default: 'Best Movie Moments'
+        type: string
+
+env:
+  CLIP_LENGTH: 60
+
+jobs:
+  process-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up variables
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            echo "VIDEO_URL=${{ github.event.client_payload.video_url }}" >> $GITHUB_OUTPUT
+            echo "CHANNEL_NAME=${{ github.event.client_payload.channel_name || 'Best Movie Moments' }}" >> $GITHUB_OUTPUT
+          else
+            echo "VIDEO_URL=${{ inputs.video_url }}" >> $GITHUB_OUTPUT
+            echo "CHANNEL_NAME=${{ inputs.channel_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg unzip
+          pip install yt-dlp
+          
+      - name: Install Deno (for yt-dlp JS runtime)
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+
+      - name: Download Bebas Neue font
+        run: |
+          mkdir -p fonts
+          curl -L "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" -o fonts/BebasNeue-Regular.ttf
+
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Setup rclone config
+        run: |
+          mkdir -p ~/.config/rclone
+          echo '${{ secrets.RCLONE_CONFIG }}' | base64 -d > ~/.config/rclone/rclone.conf
+          echo "=== Rclone config debug ==="
+          cat ~/.config/rclone/rclone.conf | head -3
+
+      - name: Setup YouTube cookies
+        run: |
+          echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
+
+      - name: Create directories
+        run: |
+          mkdir -p Input RawClips FinalClips
+
+      - name: Download video
+        run: |
+          yt-dlp --cookies cookies.txt \
+            --remote-components ejs:github \
+            -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+            --merge-output-format mp4 \
+            -o "Input/video.mp4" \
+            "${{ steps.vars.outputs.VIDEO_URL }}"
+
+      - name: Process video clips
+        env:
+          CHANNEL_NAME: ${{ steps.vars.outputs.CHANNEL_NAME }}
+        run: |
+          chmod +x ./scripts/process_movie.sh
+          ./scripts/process_movie.sh
+
+      - name: Upload to Google Drive
+        run: |
+          rclone copy FinalClips/ "vk889900:Pages Reels/Movies Clips6969" --progress
+
+      - name: Count clips created
+        id: count
+        run: |
+          COUNT=$(ls -1 FinalClips/*.mp4 2>/dev/null | wc -l)
+          echo "clips_count=$COUNT" >> $GITHUB_OUTPUT
+
+      - name: Cleanup
+        run: |
+          rm -rf Input RawClips FinalClips
+
+      - name: Notify n8n of completion
+        if: always()
+        run: |
+          curl -X POST "${{ secrets.N8N_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{"clips_count": "${{ steps.count.outputs.clips_count }}", "status": "complete"}'
+
+    outputs:
+      clips_count: ${{ steps.count.outputs.clips_count }}
